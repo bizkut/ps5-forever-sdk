@@ -1,0 +1,7 @@
+# Reviewed source false positives: OpenSM SEE ALSO C API cross-references.
+# No rules or files are disabled; these fingerprints name comment lines only.
+include/freebsd/infiniband/opensm/osm_db_pack.h:generic-api-key:292
+include/freebsd/infiniband/opensm/osm_db_pack.h:generic-api-key:322
+include/freebsd/infiniband/opensm/osm_db_pack.h:generic-api-key:352
+include/freebsd/infiniband/opensm/osm_db_pack.h:generic-api-key:378
+include/freebsd/infiniband/opensm/osm_db_pack.h:generic-api-key:379
