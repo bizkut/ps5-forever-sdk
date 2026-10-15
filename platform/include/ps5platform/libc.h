@@ -107,8 +107,9 @@ uint32_t ps5_arc4random_uniform(uint32_t bound);
  * room. */
 int ps5_statvfs(const char *path, struct statvfs *result);
 int ps5_fstatvfs(int fd, struct statvfs *result);
-/* The same answer in FreeBSD's struct statfs (<sys/mount.h>), with no device
- * behind the volume (f_mntfromname empty). result is a struct statfs. */
+/* The same answer in FreeBSD's struct statfs (<sys/mount.h>), identifying a
+ * local UFS volume (MNT_LOCAL), with no backing device name (f_mntfromname
+ * empty). result is a struct statfs. Linux host tests use the host statfs. */
 int ps5_statfs(const char *path, void *result);
 int ps5_fstatfs(int fd, void *result);
 

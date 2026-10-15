@@ -36,6 +36,7 @@ extern int host_empty_decimal_point;
 #include <langinfo.h>
 #include <pwd.h>
 #include <netdb.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -46,6 +47,11 @@ extern int host_empty_decimal_point;
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/vfs.h>
+#else
+#include <sys/mount.h>
+#endif
 
 static unsigned checks, failures;
 
@@ -651,7 +657,7 @@ test_memfd(void)
 
 /* accept4, getpagesizes, in6addr_any and thread affinity (src/libc.c). */
 static void
-test_libc_system(void)
+test_libc_system(long initial_cpus)
 {
    size_t sizes[2] = {0, 0};
    check(ps5_getpagesizes(NULL, 0) == 1 && ps5_getpagesizes(sizes, 2) == 1 && sizes[0] == 0x4000 &&
@@ -684,11 +690,36 @@ test_libc_system(void)
    char *const allocated = ps5_realpath("/tmp", NULL);
    check(allocated && !strcmp(allocated, "/tmp"), "realpath: allocated when no buffer is given");
    free(allocated);
-   struct stat own;
-   check(stat(".", &own) == 0, "statfs: a path to ask about");
-   char volume[512];
-   check(ps5_statfs(".", volume) == 0 && ps5_statfs("/no/such/path", volume) == -1 && errno == ENOENT,
-         "statfs: an existing path answers, a missing one is ENOENT");
+   struct {
+      uint64_t before;
+      struct statfs value;
+      uint64_t after;
+   } volume;
+   const uint64_t guard = UINT64_C(0x5a5a5a5a5a5a5a5a);
+   memset(&volume, 0x5a, sizeof(volume));
+   check(ps5_statfs(".", &volume.value) == 0, "statfs: an existing path answers");
+   check(volume.before == guard && volume.after == guard, "statfs: writes only the result");
+#if !defined(__linux__)
+   check(!strcmp(volume.value.f_fstypename, "ufs") && (volume.value.f_flags & MNT_LOCAL),
+         "statfs: the synthetic UFS volume is local");
+#endif
+   errno = 0;
+   check(ps5_statfs("/no/such/path", &volume.value) == -1 && errno == ENOENT,
+         "statfs: a missing path is ENOENT");
+   const int volume_fd = open(".", O_RDONLY | O_DIRECTORY);
+   check(volume_fd >= 0, "fstatfs: an existing directory opens");
+   if (volume_fd >= 0) {
+      memset(&volume, 0x5a, sizeof(volume));
+      check(ps5_fstatfs(volume_fd, &volume.value) == 0, "fstatfs: an existing fd answers");
+      check(volume.before == guard && volume.after == guard, "fstatfs: writes only the result");
+#if !defined(__linux__)
+      check(!strcmp(volume.value.f_fstypename, "ufs") && (volume.value.f_flags & MNT_LOCAL),
+            "fstatfs: the synthetic UFS volume is local");
+#endif
+      close(volume_fd);
+   }
+   errno = 0;
+   check(ps5_fstatfs(-1, &volume.value) == -1 && errno == EBADF, "fstatfs: an invalid fd is EBADF");
    check(ps5_umask(022) == 0 && ps5_umask(077) == 0, "umask: no mask, none kept");
    errno = 0;
    check(ps5_fork() == -1 && errno == ENOSYS && ps5_setsid() == -1 && errno == EPERM &&
@@ -735,10 +766,12 @@ test_libc_system(void)
             (memcpy(&mask, set, 8), mask != 0) && !memcmp(set + 8, zero, 8),
          "affinity: read as a set, CPUs past 63 clear");
    check(ps5_pthread_setaffinity_np(pthread_self(), sizeof(set), set) == 0, "affinity: set back");
-   check(ps5_sysconf(_SC_NPROCESSORS_ONLN) == __builtin_popcountll(mask) &&
-            ps5_sysconf(_SC_NPROCESSORS_CONF) == __builtin_popcountll(mask) &&
-            ps5_sysconf(_SC_PAGESIZE) == sysconf(_SC_PAGESIZE),
-         "sysconf: the CPUs in the affinity mask; the rest as sysconf says");
+   check(ps5_sysconf(_SC_NPROCESSORS_ONLN) == initial_cpus,
+         "sysconf: online CPUs retain the first caller's affinity count after probes");
+   check(ps5_sysconf(_SC_NPROCESSORS_CONF) == initial_cpus,
+         "sysconf: configured CPUs retain the first caller's affinity count after probes");
+   check(ps5_sysconf(_SC_PAGESIZE) == sysconf(_SC_PAGESIZE),
+         "sysconf: page size delegates to the host");
    uint8_t none[16] = {0};
    check(ps5_pthread_setaffinity_np(pthread_self(), sizeof(none), none) == EINVAL,
          "affinity: no CPU is refused");
@@ -787,9 +820,23 @@ test_libc(void)
    check(ps5_getpwuid(0) == NULL, "libc: getpwuid finds no user");
    check(ps5_gethostbyaddr("\x7f\0\0\1", 4, 2) == NULL, "libc: gethostbyaddr finds no host");
    check(ps5_gethostbyname("localhost") == NULL, "libc: gethostbyname finds no host");
-   char interface_name[16];
-   check(ps5_if_nametoindex("lo0") == 0 && ps5_if_indextoname(1, interface_name) == NULL,
-         "libc: interface lookups find nothing, as if_nameindex does");
+   char interface_name[IF_NAMESIZE];
+   struct if_nameindex *const interfaces = ps5_if_nameindex();
+   check(interfaces != NULL, "libc: interface enumeration answers");
+   if (interfaces) {
+      struct if_nameindex *entry;
+      for (entry = interfaces; entry->if_name; entry++) {
+         check(entry->if_index && ps5_if_nametoindex(entry->if_name) == entry->if_index,
+               "libc: an enumerated interface name resolves to its index");
+         check(ps5_if_indextoname(entry->if_index, interface_name) == interface_name &&
+                  !strcmp(interface_name, entry->if_name),
+               "libc: an enumerated interface index resolves to its name");
+      }
+      check(!entry->if_index, "libc: interface enumeration has a zero terminator");
+      ps5_if_freenameindex(interfaces);
+   }
+   check(ps5_if_nametoindex("ps5-no-such-if") == 0 && ps5_if_indextoname(0, interface_name) == NULL,
+         "libc: unknown interface names and indices are rejected");
    char temporary[] = "/tmp/ps5-platform-tmpfile-XXXXXX";
    check(mkdtemp(temporary) != NULL, "libc: a directory for tmpfile");
    setenv("TMPDIR", temporary, 1);
@@ -1850,6 +1897,16 @@ test_klog(void)
 int
 main(void)
 {
+   /* Establish the first-caller contract before a diagnostic can narrow affinity. */
+   uint64_t initial_mask = 0;
+   check(scePthreadGetaffinity(pthread_self(), &initial_mask) == 0 && initial_mask != 0,
+         "sysconf: capture the first caller's actual affinity mask");
+   const long initial_cpus = __builtin_popcountll(initial_mask);
+   check(ps5_sysconf(_SC_NPROCESSORS_ONLN) == initial_cpus,
+         "sysconf: first online-CPU query counts the initial affinity mask");
+   check(ps5_sysconf(_SC_NPROCESSORS_CONF) == initial_cpus,
+         "sysconf: first configured-CPU query counts the initial affinity mask");
+
    printf("%s\n", "test_model");
    fflush(stdout);
    test_model();
@@ -1894,7 +1951,7 @@ main(void)
    printf("%s\n", "test_vrange_commit");
    test_vrange_commit();
    printf("%s\n", "test_libc_system");
-   test_libc_system();
+   test_libc_system(initial_cpus);
    printf("%s\n", "test_memfd");
    fflush(stdout);
    test_memfd();

@@ -15,7 +15,9 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#if !defined(__linux__)
 #include <net/if_dl.h>
+#endif
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -145,6 +147,9 @@ fill_statfs(struct statfs *result)
    result->f_namemax = volume.f_namemax;
    strcpy(result->f_fstypename, "ufs");
    strcpy(result->f_mntonname, "/");
+   /* A title's files are on the console's own disk. Without MNT_LOCAL,
+    * FreeBSD consumers such as Wine report a network volume. */
+   result->f_flags = MNT_LOCAL;
 }
 #endif
 
@@ -763,12 +768,15 @@ ps5_getnameinfo(const void *address, unsigned int length, char *host, unsigned i
    return EAI_FAIL;
 }
 
-/* The interfaces as libc's getifaddrs lists them: one AF_LINK entry per
- * interface, carrying its index in sockaddr_dl, as FreeBSD's own libc does.
- * The returned list is one allocation, names included. */
+/* Linux host tests use their native interface APIs. On the console, libc's
+ * getifaddrs gives one AF_LINK entry per interface, with a sockaddr_dl index.
+ * The console's returned list is one allocation, names included. */
 struct if_nameindex *
 ps5_if_nameindex(void)
 {
+#if defined(__linux__)
+   return if_nameindex();
+#else
    struct ifaddrs *list, *ifa;
    struct if_nameindex *result, *entry;
    size_t count = 0, names = 0;
@@ -800,11 +808,15 @@ ps5_if_nameindex(void)
    entry->if_name = NULL;
    freeifaddrs(list);
    return result;
+#endif
 }
 
 unsigned int
 ps5_if_nametoindex(const char *name)
 {
+#if defined(__linux__)
+   return if_nametoindex(name);
+#else
    struct ifaddrs *list, *ifa;
    unsigned int index = 0;
 
@@ -817,11 +829,15 @@ ps5_if_nametoindex(const char *name)
    if (!index)
       errno = ENXIO;
    return index;
+#endif
 }
 
 char *
 ps5_if_indextoname(unsigned int index, char *name)
 {
+#if defined(__linux__)
+   return if_indextoname(index, name);
+#else
    struct ifaddrs *list, *ifa;
    char *result = NULL;
 
@@ -837,10 +853,15 @@ ps5_if_indextoname(unsigned int index, char *name)
    else
       errno = ENXIO;
    return result;
+#endif
 }
 
 void
 ps5_if_freenameindex(struct if_nameindex *list)
 {
+#if defined(__linux__)
+   if_freenameindex(list);
+#else
    free(list);
+#endif
 }

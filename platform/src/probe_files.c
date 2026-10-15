@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -213,7 +214,7 @@ ps5_platform_probe_files(ps5_probe_log_fn log, void *context, const char *direct
     * one with a "." and a "..". */
    const char *const resolve[3] = {directory, "missing-probe-entry", "./x/.."};
    for (unsigned i = 0; i < 3; i++) {
-      char asked[600], answer[1024];
+      char asked[600], answer[PATH_MAX];
       if (i == 0)
          snprintf(asked, sizeof(asked), "%s", directory);
       else
@@ -224,7 +225,7 @@ ps5_platform_probe_files(ps5_probe_log_fn log, void *context, const char *direct
       file_say(&p, "realpath '%s' -> %s '%.200s' errno=%d", asked, got ? "ok" : "NULL",
                got ? got : "", errno);
    }
-   char resolved[1024];
+   char resolved[PATH_MAX];
    const bool resolves = ps5_realpath(directory, resolved) && !strcmp(resolved, directory);
    p.failures += resolves ? 0 : 1;
    file_say(&p, "check %s the platform's realpath resolves %s", resolves ? "PASS" : "FAIL", directory);
